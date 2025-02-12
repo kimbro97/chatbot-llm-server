@@ -7,11 +7,12 @@ from langchain_community.document_loaders import Docx2txtLoader
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from langchain_chroma import Chroma
-
 from langchain import hub
 
-from langchain_core.prompts import PromptTemplate
+import os
+
+from pinecone import Pinecone
+from langchain_pinecone import PineconeVectorStore
 
 class QuestionRequest(BaseModel):
     question: str
@@ -35,30 +36,22 @@ async def llm_search(request: QuestionRequest):
 
     embedding = OpenAIEmbeddings(model="text-embedding-3-large")
 
-    # database = Chroma.from_documents(documents=document_list, embedding=embedding, collection_name="chroma-tax", persist_directory="./chroma")
-    database = Chroma.from_documents(collection_name="chroma-tax", persist_directory="./chroma")
+    index_name = 'tax-index'
+    pinecone_api_key = os.environ.get("PINECONE_API_KEY")
+    pc = Pinecone(api_key=pinecone_api_key)
 
-    query = "연봉 5천만원인 직장인의 소득세는 얼마인가요?"
+    database = PineconeVectorStore.from_documents(document_list, embedding, index_name=index_name)
+    
+    retriever = database.as_retriever(search_kwargs={'k': 1})
+    retriever.invoke(request.question)
+    retrieved_docs = retriever.invoke(request.question)
 
-    retrieved_docs = database.similarity_search(query, k=3)
+    print(retrieved_docs)
+    print(len(retrieved_docs))
 
-    # prompt = f"""[Identity]
-    # - 당신은 최고의 한국 소득세 전문가 입니다
-    # - [Context]를 참고해서 사용자의 질문에 답변해주세요
+    rlm_rag_prompt = hub.pull("rlm/rag-prompt")
 
-    # [Context]
-    # {retrieved_docs}
-
-    # Question: {query}
-    # """
-
-    prompt_with_template = '아래 질문에 답변해주세요:\n\n {question}'
-
-    prompt_template = PromptTemplate(template=prompt_with_template, input_variables=["question"])
-    prompt_chain = prompt_template | llm
-
-    ai_message = prompt_chain.invoke({"question": request.question})
-
-    print(ai_message.content)
-    # answer = llm.invoke(request.question)
-    return request
+    rlm_rag_chain = rlm_rag_prompt | llm
+    ai_message = rlm_rag_chain.invoke({"context": retrieved_docs, "question": request.question})
+    
+    return ai_message.content
